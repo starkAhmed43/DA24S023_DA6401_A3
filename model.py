@@ -16,7 +16,10 @@ class Seq2SeqModel(pl.LightningModule):
         num_layers (int): Number of layers in both the encoder and decoder.
         learning_rate (float): Learning rate for the optimizer.
     """
-    def __init__(self, input_vocab_size, output_vocab_size, embedding_dim=128, hidden_dim=256, rnn_cell='LSTM', num_layers=1, learning_rate=1e-3):
+    def __init__(self, input_vocab_size, output_vocab_size, embedding_dim=128, hidden_dim=256, rnn_cell='LSTM', num_layers=1, learning_rate=1e-3, dropout=0.1):
+        """
+        Initializes the Seq2SeqModel.
+        """
         super(Seq2SeqModel, self).__init__()
         self.save_hyperparameters()
 
@@ -31,10 +34,10 @@ class Seq2SeqModel(pl.LightningModule):
         RNNCell = rnn_cell_map[rnn_cell]
 
         # Encoder RNN
-        self.encoder = RNNCell(input_size=embedding_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
+        self.encoder = RNNCell(input_size=embedding_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0.0)
 
         # Decoder RNN
-        self.decoder = RNNCell(input_size=embedding_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
+        self.decoder = RNNCell(input_size=embedding_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0.0)
 
         # Fully connected layer to map decoder outputs to output vocabulary
         self.fc = nn.Linear(hidden_dim, output_vocab_size)
@@ -43,13 +46,9 @@ class Seq2SeqModel(pl.LightningModule):
         self.rnn_cell = rnn_cell
 
         # Metrics
-        self.train_accuracy = tm.Accuracy(type='multiclass', num_classes=output_vocab_size)
-        self.val_accuracy = tm.Accuracy(type='multiclass', num_classes=output_vocab_size)
-        self.test_accuracy = tm.Accuracy(type='multiclass', num_classes=output_vocab_size)
-        
-        self.train_loss = tm.MeanMetric()
-        self.val_loss = tm.MeanMetric()
-        self.test_loss = tm.MeanMetric()
+        self.train_accuracy = tm.Accuracy(task='multiclass', num_classes=output_vocab_size)
+        self.val_accuracy = tm.Accuracy(task='multiclass', num_classes=output_vocab_size)
+        self.test_accuracy = tm.Accuracy(task='multiclass', num_classes=output_vocab_size)
 
     def forward(self, input_seq, target_seq=None, teacher_forcing_ratio=0.5):
         """
@@ -92,7 +91,8 @@ class Seq2SeqModel(pl.LightningModule):
 
         # Concatenate outputs along the time dimension
         outputs = torch.cat(outputs, dim=1)  # (batch_size, target_seq_len, output_vocab_size)
-        return outputs
+        preds = outputs.argmax(dim=2)  # (batch_size, target_seq_len)
+        return outputs, preds
 
     def training_step(self, batch, batch_idx):
         """
@@ -103,21 +103,29 @@ class Seq2SeqModel(pl.LightningModule):
             batch_idx (int): Index of the batch.
 
         Returns:
-            Tensor: Training loss.
+            Tensor: Character-wise training loss.
         """
-        input_seq, target_seq = batch
-        output_logits = self(input_seq, target_seq, teacher_forcing_ratio=0.5)
+        native_word, romanization, attestation = batch
+        input_seq, target_seq = romanization, native_word
+
+        output_logits, preds = self(input_seq, target_seq, teacher_forcing_ratio=0.5)
         loss = nn.CrossEntropyLoss()(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
+
+        # Use attestation as weights in loss calculation
+        weights = attestation.float().repeat_interleave(target_seq.size(1))
+        weighted_loss = (loss * weights).mean()
+
+        word_matches = (preds == target_seq).all(dim=1).float()  # shape: (batch_size,)
         
         self.train_accuracy(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
-        self.train_loss(loss)
-        self.log("train/accuracy", self.train_accuracy, on_step=True, on_epoch=True)
-        self.log("train/loss", loss)
-        return loss
+        self.log("train/char_accuracy", self.train_accuracy, on_epoch=True, on_step=False)
+        self.log("train/word_accuracy", word_matches.mean(), on_epoch=True, on_step=False)
+        self.log("train/loss", weighted_loss, on_epoch=True, on_step=False)
+        return weighted_loss
 
     def validation_step(self, batch, batch_idx):
         """
-        Validation step for the model.
+        Validation step for the model. 
 
         Args:
             batch (tuple): A batch of data containing input and target sequences.
@@ -126,17 +134,24 @@ class Seq2SeqModel(pl.LightningModule):
         Returns:
             Tensor: Validation loss.
         """
-        input_seq, target_seq = batch
-        output_logits = self(input_seq, target_seq, teacher_forcing_ratio=0.0)
+        native_word, romanization, attestation = batch
+        input_seq, target_seq = romanization, native_word
+
+        # Use teacher forcing ratio of 0 for validation
+        output_logits, preds = self(input_seq, target_seq, teacher_forcing_ratio=0.0)
         loss = nn.CrossEntropyLoss()(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
         
-        self.val_accuracy(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
-        self.val_loss(loss)
+        weights = attestation.float().repeat_interleave(target_seq.size(1))
+        weighted_loss = (loss * weights).mean()
+        
+        word_matches = (preds == target_seq).all(dim=1).float()
 
-        self.log("val/accuracy", self.val_accuracy, on_step=True, on_epoch=True)
-        self.log("val/loss", loss)
-        return loss
-    
+        self.val_accuracy(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
+        self.log("val/char_accuracy", self.val_accuracy, on_epoch=True, on_step=False)
+        self.log("val/word_accuracy", word_matches.mean(), on_epoch=True, on_step=False)
+        self.log("val/loss", weighted_loss, on_epoch=True, on_step=False)
+        return weighted_loss
+
     def test_step(self, batch, batch_idx):
         """
         Test step for the model.
@@ -153,9 +168,7 @@ class Seq2SeqModel(pl.LightningModule):
         loss = nn.CrossEntropyLoss()(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
         
         self.test_accuracy(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
-        self.test_loss(loss)
-
-        self.log("test/accuracy", self.test_accuracy, on_step=True, on_epoch=True)
+        self.log("test/accuracy", self.test_accuracy)
         self.log("test/loss", loss)
         return loss
 
