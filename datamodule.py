@@ -1,3 +1,4 @@
+import torch
 import shutil
 import tarfile
 import warnings
@@ -5,10 +6,59 @@ import subprocess
 import pandas as pd
 from pathlib import Path
 import pytorch_lightning as pl
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
 
 # Suppress specific warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+
+def build_vocab(sequences):
+    """
+    Builds a vocabulary from the given sequences.
+    Args:
+        sequences (list): A list of sequences (words) to build the vocabulary from.
+    Returns:
+        dict: A dictionary mapping characters to indices.
+    """
+    # Initialize the vocabulary with special tokens
+    # <pad> for padding, <sos> for start of sequence, and <eos> for end of sequence
+    # <pad> is 0, <sos> is 1, and <eos> is 2
+    # The rest of the characters will be indexed starting from 3
+    vocab = {"<pad>": 0, "<sos>": 1, "<eos>": 2}
+    idx = 3
+    for seq in sequences:
+        for c in str(seq):
+            if c not in vocab:
+                vocab[c] = idx
+                idx += 1
+    return vocab
+
+def tokenize(word, vocab):
+    """
+    Tokenizes a word into indices based on the provided vocabulary.
+    Args:
+        word (str): The word to tokenize.
+        vocab (dict): The vocabulary mapping characters to indices.
+    Returns:    
+        list: A list of indices representing the tokenized word.
+    """
+    # Convert the word to a string and tokenize it using the vocabulary
+    # Add <sos> and <eos> tokens
+    return [vocab["<sos>"]] + [vocab[c] for c in str(word)] + [vocab["<eos>"]]
+
+def dakshina_collate_fn(batch):
+    """
+    Custom collate function for the Dakshina dataset.
+    Args:
+        batch (list): A list of tuples containing native words, romanizations, and attestations.
+    Returns:
+        tuple: A tuple containing padded native words, padded romanizations, and stacked attestations.
+    """
+    native_words, romanizations, attestations = zip(*batch)
+    native_words_padded = pad_sequence(native_words, batch_first=True, padding_value=0)
+    romanizations_padded = pad_sequence(romanizations, batch_first=True, padding_value=0)
+    attestations = torch.stack(attestations)
+    return native_words_padded, romanizations_padded, attestations
 
 class DakshinaDataset(Dataset):
     """
@@ -16,9 +66,13 @@ class DakshinaDataset(Dataset):
 
     Args:
         dataframe (pd.DataFrame): A pandas DataFrame containing the dataset.
+        native_vocab (dict): Vocabulary for native script.
+        roman_vocab (dict): Vocabulary for romanization.
     """
-    def __init__(self, dataframe):
+    def __init__(self, dataframe, native_vocab, roman_vocab):
         self.data = dataframe
+        self.native_vocab = native_vocab
+        self.roman_vocab = roman_vocab
 
     def __len__(self):
         """Returns the total number of samples in the dataset."""
@@ -34,12 +88,13 @@ class DakshinaDataset(Dataset):
         Returns:
             tuple: A tuple containing the native script word, romanization, and attestation.
         """
-        # Extract the row at the given index
         row = self.data.iloc[idx]
-        # Extract the native script word, romanization, and attestation
-        native_word, romanization, attestation = row[0], row[1], row[2]
+        native_word, romanization, attestation = row.iloc[0], row.iloc[1], row.iloc[2]
 
-        return native_word, romanization, attestation
+        native_tensor = torch.LongTensor(tokenize(native_word, self.native_vocab))
+        roman_tensor = torch.LongTensor(tokenize(romanization, self.roman_vocab))
+        attestation_tensor = torch.tensor(float(attestation), dtype=torch.float)
+        return native_tensor, roman_tensor, attestation_tensor
 
 class DakshinaDataModule(pl.LightningDataModule):
     """
@@ -130,11 +185,15 @@ class DakshinaDataModule(pl.LightningDataModule):
         train_df = pd.read_csv(train_data, sep="\t", names=[self.lang, "en", "attest"])
         val_df = pd.read_csv(val_data, sep="\t", names=[self.lang, "en", "attest"])
         test_df = pd.read_csv(test_data, sep="\t", names=[self.lang, "en", "attest"])
+
+        # Build vocabularies for native and romanized scripts
+        self.native_vocab = build_vocab(train_df[self.lang])
+        self.roman_vocab = build_vocab(train_df["en"])
         
         # Store the datasets as attributes for later use
-        self.train_dataset = DakshinaDataset(train_df)
-        self.val_dataset = DakshinaDataset(val_df)
-        self.test_dataset = DakshinaDataset(test_df)
+        self.train_dataset = DakshinaDataset(train_df, self.native_vocab, self.roman_vocab)
+        self.val_dataset = DakshinaDataset(val_df, self.native_vocab, self.roman_vocab)
+        self.test_dataset = DakshinaDataset(test_df, self.native_vocab, self.roman_vocab)
 
     def train_dataloader(self):
         """
@@ -143,7 +202,15 @@ class DakshinaDataModule(pl.LightningDataModule):
         Returns:
             DataLoader: DataLoader for the training dataset.
         """
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True,
+            collate_fn=dakshina_collate_fn
+        )
 
     def val_dataloader(self):
         """
@@ -152,7 +219,15 @@ class DakshinaDataModule(pl.LightningDataModule):
         Returns:
             DataLoader: DataLoader for the validation dataset.
         """
-        return DataLoader(self.val_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True,
+            collate_fn=dakshina_collate_fn
+        )
 
     def test_dataloader(self):
         """
@@ -161,7 +236,15 @@ class DakshinaDataModule(pl.LightningDataModule):
         Returns:
             DataLoader: DataLoader for the test dataset.
         """
-        return DataLoader(self.test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers, persistent_workers=True)
+        return DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True,
+            pin_memory=True,
+            collate_fn=dakshina_collate_fn
+        )
 
 
 if __name__ == "__main__":
@@ -178,6 +261,8 @@ if __name__ == "__main__":
 
     # Print dataset and loader details
     print(f"Language: {data_module.lang}")
+    print(f"Roman (Input) vocab size: {len(data_module.roman_vocab)}")
+    print(f"Native (Output) vocab size: {len(data_module.native_vocab)}")
     print(f"Batch size: {data_module.batch_size}")
     print(f"Number of training batches: {len(train_loader)}")
     print(f"Number of validation batches: {len(val_loader)}")
