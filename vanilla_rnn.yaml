@@ -1,0 +1,15 @@
+batch_size: 512
+dropout: 0.2
+embedding_dim: 512
+epochs: 20
+hidden_dim: 384
+input_vocab_size: 29
+lang: "ta"
+learning_rate: 0.0005
+num_layers: 6
+num_workers: 32
+output_vocab_size: 49
+project: "DA24S023_DA6401_A3"
+rnn_cell: "GRU"
+attention_type: "none"
+train_teacher_forcing_ratio: 0.5
