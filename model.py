@@ -234,14 +234,48 @@ class Seq2SeqModel(pl.LightningModule):
         Returns:
             Tensor: Test loss.
         """
-        input_seq, target_seq = batch
-        output_logits = self(input_seq, target_seq, teacher_forcing_ratio=0.0)
+        native_word, romanization, attestation = batch
+        input_seq, target_seq = romanization, native_word
+
+        # Use teacher forcing ratio of 0 for testing
+        output_logits, preds = self(input_seq, target_seq, teacher_forcing_ratio=0.0)
         loss = nn.CrossEntropyLoss()(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
+
+        weights = attestation.float().repeat_interleave(target_seq.size(1))
+        weighted_loss = (loss * weights).mean()
+        
+        word_matches = (preds == target_seq).all(dim=1).float()
         
         self.test_accuracy(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
-        self.log("test/accuracy", self.test_accuracy)
-        self.log("test/loss", loss)
-        return loss
+        self.log("test/char_accuracy", self.test_accuracy, on_epoch=True, on_step=False)
+        self.log("test/word_accuracy", word_matches.mean(), on_epoch=True, on_step=False)
+        self.log("test/loss", weighted_loss, on_epoch=True, on_step=False)
+        
+        return {
+            "input_seq": input_seq.cpu(),
+            "preds": preds.cpu(),
+            "target_seq": target_seq.cpu(),
+        }
+    
+    def on_test_epoch_start(self):
+        self._test_outputs = []
+
+    def on_test_batch_end(self, outputs, batch, batch_idx, dataloader_idx=0):
+        self._test_outputs.append(outputs)
+
+    def on_test_epoch_end(self):
+        all_inputs, all_preds, all_refs = [], [], []
+        
+        for o in self._test_outputs:
+            all_inputs.extend([seq for seq in o["input_seq"]])
+            all_preds.extend([seq for seq in o["preds"]])
+            all_refs.extend([seq for seq in o["target_seq"]])
+        
+        self.test_results = {
+            "input_seq": all_inputs,
+            "preds": all_preds,
+            "target_seq": all_refs,
+        }
 
     def configure_optimizers(self):
         """
