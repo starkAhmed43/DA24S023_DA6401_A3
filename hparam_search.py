@@ -33,7 +33,7 @@ def hparam_search():
         num_layers=config.num_layers,
         learning_rate=config.learning_rate,
         dropout=config.dropout,
-        is_attentive=config.attentive,
+        attention_type=config.attention_type,
         train_teacher_forcing_ratio=config.train_teacher_forcing_ratio,
     )
 
@@ -106,20 +106,23 @@ if __name__ == "__main__":
         help='Number of epochs for training (default: 20)'
     )
     parser.add_argument(
-        '-atn', '--attentive',
-        type=bool,
-        default=False,
-        help='Use Luong attention mechanism in the decoder (default: False)'
+        '-atn', '--attention',
+        type=str,
+        default='none',
+        choices=['bahdanau', 'luong', 'none'],
+        help='Attention mechanism to use (default: none). Choices: Bahdanau, Luong'
     )
     args = parser.parse_args()
+
+    attention_type = None if args.attention == 'none' else args.attention
 
     sweep_configuration['parameters']['lang'] = {'values': [args.lang]}
     sweep_configuration['parameters']['project'] = {'values': [args.project]}
     sweep_configuration['parameters']['batch_size'] = {'values': [args.batch_size]}
     sweep_configuration['parameters']['num_workers'] = {'values': [args.num_workers]}
     sweep_configuration['parameters']['epochs'] = {'values': [args.epochs]}
-    sweep_configuration['parameters']['attentive'] = {'values': [args.attentive]}
-    sweep_configuration['name'] = f"{args.project}_attn:{args.attentive}"
+    sweep_configuration['parameters']['attention_type'] = {'values': [attention_type]}
+    sweep_configuration['name'] = f"{args.project}_attn:{attention_type}"
 
     sweep_id = wandb.sweep(sweep_configuration, project=args.project)
     wandb.agent(sweep_id, function=hparam_search, count=args.sweep_count)

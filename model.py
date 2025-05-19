@@ -13,7 +13,7 @@ class Seq2SeqModel(pl.LightningModule):
         num_layers=4, 
         learning_rate=1e-3, 
         dropout=0.1,
-        is_attentive=False,
+        attention_type=None,
         train_teacher_forcing_ratio=0.5,
     ):
         """
@@ -33,7 +33,7 @@ class Seq2SeqModel(pl.LightningModule):
         super(Seq2SeqModel, self).__init__()
         self.save_hyperparameters()
 
-        self.is_attentive = is_attentive
+        self.attention_type = attention_type
         self.train_teacher_forcing_ratio = train_teacher_forcing_ratio
 
         # Embedding layers for input and output vocabularies
@@ -46,6 +46,11 @@ class Seq2SeqModel(pl.LightningModule):
             raise ValueError("Invalid RNN cell type. Choose from 'RNN', 'LSTM', 'GRU'.")
         RNNCell = rnn_cell_map[rnn_cell]
 
+        # Bahdanau attention layers (only if needed)
+        if attention_type == 'bahdanau':
+            self.attn_W = nn.Linear(hidden_dim * 2, hidden_dim)
+            self.attn_v = nn.Linear(hidden_dim, 1, bias=False)
+
         # Encoder RNN
         self.encoder = RNNCell(
             input_size=embedding_dim, 
@@ -56,8 +61,9 @@ class Seq2SeqModel(pl.LightningModule):
         )
 
         # Decoder RNN
+        decoder_input_size = embedding_dim + (hidden_dim if attention_type else 0)
         self.decoder = RNNCell(
-            input_size=embedding_dim + (hidden_dim if is_attentive else 0), 
+            input_size=decoder_input_size, 
             hidden_size=hidden_dim, 
             num_layers=num_layers, 
             batch_first=True, 
@@ -102,10 +108,10 @@ class Seq2SeqModel(pl.LightningModule):
         outputs = []
         for t in range(target_seq_len):
             decoder_embedded = self.output_embedding(decoder_input)  # (batch_size, 1, embedding_dim)
-            if self.is_attentive:
+            if self.attention_type == 'luong':
                 dec_h = decoder_hidden[0][-1] if self.rnn_cell == 'LSTM' else decoder_hidden[-1]
 
-                 # Compute attention scores
+                # Compute attention scores
                 attn_scores = torch.bmm(
                     encoder_outputs,  # (batch, src_len, hidden_dim)
                     dec_h.unsqueeze(2)  # (batch, hidden_dim, 1)
@@ -118,7 +124,29 @@ class Seq2SeqModel(pl.LightningModule):
                     encoder_outputs  # (batch, src_len, hidden_dim)
                 )  # (batch, 1, hidden_dim)
                 decoder_embedded = torch.cat((decoder_embedded, context), dim=2)  # (batch_size, 1, embedding_dim + hidden_dim)
-            
+            elif self.attention_type == 'bahdanau':
+                dec_h = decoder_hidden[0][-1] if self.rnn_cell == 'LSTM' else decoder_hidden[-1]
+                dec_h_exp = dec_h.unsqueeze(1).repeat(1, encoder_outputs.size(1), 1)  # (batch, src_len, hidden_dim)
+                
+                # Concatenate encoder outputs and expanded decoder hidden state
+                concat = torch.cat((encoder_outputs, dec_h_exp), dim=2)  # (batch, src_len, hidden_dim + embedding_dim)
+
+                # Apply the attention linear layer
+                energy = torch.tanh(self.attn_W(concat))  # (batch, src_len, hidden_dim)
+
+                # Compute the attention scores
+                attn_scores = self.attn_v(energy).squeeze(2)  # (batch, src_len)
+
+                # Compute attention weights
+                attn_weights = torch.softmax(attn_scores, dim=1)  # (batch, src_len)
+                context = torch.bmm(
+                    attn_weights.unsqueeze(1),  # (batch, 1, src_len)
+                    encoder_outputs  # (batch, src_len, hidden_dim)
+                )  # (batch, 1, hidden_dim)
+                decoder_embedded = torch.cat((decoder_embedded, context), dim=2)  # (batch_size, 1, embedding_dim + hidden_dim)
+            else:
+                pass
+
             # Pass through the decoder
             decoder_output, decoder_hidden = self.decoder(decoder_embedded, decoder_hidden)
 
