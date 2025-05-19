@@ -32,7 +32,9 @@ def hparam_search():
         rnn_cell=config.rnn_cell,
         num_layers=config.num_layers,
         learning_rate=config.learning_rate,
-        dropout=config.dropout
+        dropout=config.dropout,
+        is_attentive=config.attentive,
+        train_teacher_forcing_ratio=config.train_teacher_forcing_ratio,
     )
 
     # Initialize the PyTorch Lightning Trainer
@@ -61,6 +63,7 @@ if __name__ == "__main__":
             'rnn_cell': {'values': ['RNN', 'LSTM', 'GRU']},
             'dropout': {'values': [0.2, 0.3, 0.4]},
             'learning_rate': {'values': [5e-3, 1e-3, 5e-4]},
+            'train_teacher_forcing_ratio': {'values': [0.3, 0.5, 0.7]},
         }
     }
 
@@ -102,6 +105,12 @@ if __name__ == "__main__":
         default=20,
         help='Number of epochs for training (default: 20)'
     )
+    parser.add_argument(
+        '-atn', '--attentive',
+        type=bool,
+        default=False,
+        help='Use Luong attention mechanism in the decoder (default: False)'
+    )
     args = parser.parse_args()
 
     sweep_configuration['parameters']['lang'] = {'values': [args.lang]}
@@ -109,6 +118,8 @@ if __name__ == "__main__":
     sweep_configuration['parameters']['batch_size'] = {'values': [args.batch_size]}
     sweep_configuration['parameters']['num_workers'] = {'values': [args.num_workers]}
     sweep_configuration['parameters']['epochs'] = {'values': [args.epochs]}
-    
+    sweep_configuration['parameters']['attentive'] = {'values': [args.attentive]}
+    sweep_configuration['name'] = f"{args.project}_attn:{args.attentive}"
+
     sweep_id = wandb.sweep(sweep_configuration, project=args.project)
     wandb.agent(sweep_id, function=hparam_search, count=args.sweep_count)

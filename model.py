@@ -4,24 +4,37 @@ import torchmetrics as tm
 import pytorch_lightning as pl
 
 class Seq2SeqModel(pl.LightningModule):
-    """
-    A PyTorch Lightning-based sequence-to-sequence model for transliteration.
-
-    Args:
-        input_vocab_size (int): Size of the input vocabulary (Latin characters).
-        output_vocab_size (int): Size of the output vocabulary (Devanagari characters).
-        embedding_dim (int): Dimension of the character embeddings.
-        hidden_dim (int): Dimension of the hidden states in the RNNs.
-        rnn_cell (str): Type of RNN cell ('RNN', 'LSTM', 'GRU').
-        num_layers (int): Number of layers in both the encoder and decoder.
-        learning_rate (float): Learning rate for the optimizer.
-    """
-    def __init__(self, input_vocab_size, output_vocab_size, embedding_dim=128, hidden_dim=256, rnn_cell='LSTM', num_layers=1, learning_rate=1e-3, dropout=0.1):
+    def __init__(self, 
+        input_vocab_size, 
+        output_vocab_size, 
+        embedding_dim=128, 
+        hidden_dim=256, 
+        rnn_cell='LSTM', 
+        num_layers=4, 
+        learning_rate=1e-3, 
+        dropout=0.1,
+        is_attentive=False,
+        train_teacher_forcing_ratio=0.5,
+    ):
         """
-        Initializes the Seq2SeqModel.
+        A PyTorch Lightning-based sequence-to-sequence model for transliteration.
+        Args:
+            input_vocab_size (int): Size of the input vocabulary (Latin characters).
+            output_vocab_size (int): Size of the output vocabulary (Devanagari characters).
+            embedding_dim (int): Dimension of the character embeddings.
+            hidden_dim (int): Dimension of the hidden states in the RNNs.
+            rnn_cell (str): Type of RNN cell ('RNN', 'LSTM', 'GRU').
+            num_layers (int): Number of layers in both the encoder and decoder.
+            learning_rate (float): Learning rate for the optimizer.
+            dropout (float): Dropout rate for the RNN layers.
+            is_attentive (bool): Whether to use Luong attention mechanism in the decoder.
+            teacher_forcing_ratio (float): Probability of using teacher forcing during training.
         """
         super(Seq2SeqModel, self).__init__()
         self.save_hyperparameters()
+
+        self.is_attentive = is_attentive
+        self.train_teacher_forcing_ratio = train_teacher_forcing_ratio
 
         # Embedding layers for input and output vocabularies
         self.input_embedding = nn.Embedding(input_vocab_size, embedding_dim)
@@ -34,10 +47,22 @@ class Seq2SeqModel(pl.LightningModule):
         RNNCell = rnn_cell_map[rnn_cell]
 
         # Encoder RNN
-        self.encoder = RNNCell(input_size=embedding_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0.0)
+        self.encoder = RNNCell(
+            input_size=embedding_dim, 
+            hidden_size=hidden_dim, 
+            num_layers=num_layers, 
+            batch_first=True, 
+            dropout=dropout if num_layers > 1 else 0.0
+        )
 
         # Decoder RNN
-        self.decoder = RNNCell(input_size=embedding_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True, dropout=dropout if num_layers > 1 else 0.0)
+        self.decoder = RNNCell(
+            input_size=embedding_dim + (hidden_dim if is_attentive else 0), 
+            hidden_size=hidden_dim, 
+            num_layers=num_layers, 
+            batch_first=True, 
+            dropout=dropout if num_layers > 1 else 0.0
+        )
 
         # Fully connected layer to map decoder outputs to output vocabulary
         self.fc = nn.Linear(hidden_dim, output_vocab_size)
@@ -67,7 +92,7 @@ class Seq2SeqModel(pl.LightningModule):
 
         # Encode the input sequence
         input_embedded = self.input_embedding(input_seq)  # (batch_size, input_seq_len, embedding_dim)
-        _, hidden = self.encoder(input_embedded)  # hidden: (num_layers, batch_size, hidden_dim) or tuple for LSTM
+        encoder_outputs, hidden = self.encoder(input_embedded)  # hidden: (num_layers, batch_size, hidden_dim) or tuple for LSTM
 
         # Prepare the initial input for the decoder (start token, assumed to be index 0)
         decoder_input = torch.zeros(batch_size, 1, dtype=torch.long, device=input_seq.device)  # (batch_size, 1)
@@ -77,6 +102,24 @@ class Seq2SeqModel(pl.LightningModule):
         outputs = []
         for t in range(target_seq_len):
             decoder_embedded = self.output_embedding(decoder_input)  # (batch_size, 1, embedding_dim)
+            if self.is_attentive:
+                dec_h = decoder_hidden[0][-1] if self.rnn_cell == 'LSTM' else decoder_hidden[-1]
+
+                 # Compute attention scores
+                attn_scores = torch.bmm(
+                    encoder_outputs,  # (batch, src_len, hidden_dim)
+                    dec_h.unsqueeze(2)  # (batch, hidden_dim, 1)
+                ).squeeze(2)  # (batch, src_len)                
+                attn_weights = torch.softmax(attn_scores, dim=1)  # (batch, src_len)
+
+                # Compute context vector
+                context = torch.bmm(
+                    attn_weights.unsqueeze(1),  # (batch, 1, src_len)
+                    encoder_outputs  # (batch, src_len, hidden_dim)
+                )  # (batch, 1, hidden_dim)
+                decoder_embedded = torch.cat((decoder_embedded, context), dim=2)  # (batch_size, 1, embedding_dim + hidden_dim)
+            
+            # Pass through the decoder
             decoder_output, decoder_hidden = self.decoder(decoder_embedded, decoder_hidden)
 
             # Map decoder output to vocabulary space
@@ -108,7 +151,7 @@ class Seq2SeqModel(pl.LightningModule):
         native_word, romanization, attestation = batch
         input_seq, target_seq = romanization, native_word
 
-        output_logits, preds = self(input_seq, target_seq, teacher_forcing_ratio=0.5)
+        output_logits, preds = self(input_seq, target_seq, self.train_teacher_forcing_ratio)
         loss = nn.CrossEntropyLoss()(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
 
         # Use attestation as weights in loss calculation
