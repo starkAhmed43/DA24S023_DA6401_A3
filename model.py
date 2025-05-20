@@ -1,4 +1,6 @@
+import wandb
 import torch
+import pandas as pd
 import torch.nn as nn
 import torchmetrics as tm
 import pytorch_lightning as pl
@@ -21,14 +23,14 @@ class Seq2SeqModel(pl.LightningModule):
         Args:
             input_vocab_size (int): Size of the input vocabulary (Latin characters).
             output_vocab_size (int): Size of the output vocabulary (Devanagari characters).
-            embedding_dim (int): Dimension of the character embeddings.
-            hidden_dim (int): Dimension of the hidden states in the RNNs.
-            rnn_cell (str): Type of RNN cell ('RNN', 'LSTM', 'GRU').
-            num_layers (int): Number of layers in both the encoder and decoder.
-            learning_rate (float): Learning rate for the optimizer.
-            dropout (float): Dropout rate for the RNN layers.
-            is_attentive (bool): Whether to use Luong attention mechanism in the decoder.
-            teacher_forcing_ratio (float): Probability of using teacher forcing during training.
+            embedding_dim (int): Dimension of the character embeddings. Default: 128.
+            hidden_dim (int): Dimension of the hidden states in the RNNs. Default: 256.
+            rnn_cell (str): Type of RNN cell ('RNN', 'LSTM', 'GRU'). Default: 'LSTM'.
+            num_layers (int): Number of layers in both the encoder and decoder. Default: 4.
+            learning_rate (float): Learning rate for the optimizer. Default: 1e-3.
+            dropout (float): Dropout rate for the RNN layers. Default: 0.1.
+            attention_type (str): Type of attention mechanism ('bahdanau', 'luong', or None). Default: None.
+            teacher_forcing_ratio (float): Probability of using teacher forcing during training. Default: 0.5.
         """
         super(Seq2SeqModel, self).__init__()
         self.save_hyperparameters()
@@ -81,7 +83,7 @@ class Seq2SeqModel(pl.LightningModule):
         self.val_accuracy = tm.Accuracy(task='multiclass', num_classes=output_vocab_size)
         self.test_accuracy = tm.Accuracy(task='multiclass', num_classes=output_vocab_size)
 
-    def forward(self, input_seq, target_seq=None, teacher_forcing_ratio=0.5):
+    def forward(self, input_seq, target_seq=None, teacher_forcing_ratio=0.5, return_attn=False):
         """
         Forward pass for the seq2seq model.
 
@@ -89,6 +91,7 @@ class Seq2SeqModel(pl.LightningModule):
             input_seq (Tensor): Input sequence of shape (batch_size, input_seq_len).
             target_seq (Tensor, optional): Target sequence of shape (batch_size, target_seq_len).
             teacher_forcing_ratio (float, optional): Probability of using teacher forcing during training.
+            return_attn (bool, optional): Whether to return attention weights. Default: False.
 
         Returns:
             Tensor: Output logits of shape (batch_size, target_seq_len, output_vocab_size).
@@ -106,6 +109,7 @@ class Seq2SeqModel(pl.LightningModule):
 
         # Decode the sequence
         outputs = []
+        attn_weights_all = [] if self.attention_type else None
         for t in range(target_seq_len):
             decoder_embedded = self.output_embedding(decoder_input)  # (batch_size, 1, embedding_dim)
             if self.attention_type == 'luong':
@@ -117,6 +121,7 @@ class Seq2SeqModel(pl.LightningModule):
                     dec_h.unsqueeze(2)  # (batch, hidden_dim, 1)
                 ).squeeze(2)  # (batch, src_len)                
                 attn_weights = torch.softmax(attn_scores, dim=1)  # (batch, src_len)
+                attn_weights_all.append(attn_weights.unsqueeze(1))  # Store attention weights for visualization
 
                 # Compute context vector
                 context = torch.bmm(
@@ -139,6 +144,9 @@ class Seq2SeqModel(pl.LightningModule):
 
                 # Compute attention weights
                 attn_weights = torch.softmax(attn_scores, dim=1)  # (batch, src_len)
+                attn_weights_all.append(attn_weights.unsqueeze(1))  # Store attention weights for visualization
+
+                # Compute context vector
                 context = torch.bmm(
                     attn_weights.unsqueeze(1),  # (batch, 1, src_len)
                     encoder_outputs  # (batch, src_len, hidden_dim)
@@ -163,6 +171,9 @@ class Seq2SeqModel(pl.LightningModule):
         # Concatenate outputs along the time dimension
         outputs = torch.cat(outputs, dim=1)  # (batch_size, target_seq_len, output_vocab_size)
         preds = outputs.argmax(dim=2)  # (batch_size, target_seq_len)
+        if return_attn and self.attention_type:
+            attn_tensor = torch.cat(attn_weights_all, dim=1)  # (batch, tgt_len, src_len)
+            return outputs, preds, attn_tensor
         return outputs, preds
 
     def training_step(self, batch, batch_idx):
@@ -238,23 +249,26 @@ class Seq2SeqModel(pl.LightningModule):
         input_seq, target_seq = romanization, native_word
 
         # Use teacher forcing ratio of 0 for testing
-        output_logits, preds = self(input_seq, target_seq, teacher_forcing_ratio=0.0)
+        if self.attention_type in ['bahdanau', 'luong']:
+            output_logits, preds, attn_weights = self(input_seq, target_seq, teacher_forcing_ratio=0.0, return_attn=True)
+        else:
+            output_logits, preds = self(input_seq, target_seq, teacher_forcing_ratio=0.0)
+            attn_weights = None
+        
         loss = nn.CrossEntropyLoss()(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
-
         weights = attestation.float().repeat_interleave(target_seq.size(1))
-        weighted_loss = (loss * weights).mean()
-        
-        word_matches = (preds == target_seq).all(dim=1).float()
-        
+        weighted_loss = (loss * weights).mean()        
+        word_matches = (preds == target_seq).all(dim=1).float()        
         self.test_accuracy(output_logits.view(-1, self.hparams.output_vocab_size), target_seq.view(-1))
-        self.log("test/char_accuracy", self.test_accuracy, on_epoch=True, on_step=False)
-        self.log("test/word_accuracy", word_matches.mean(), on_epoch=True, on_step=False)
-        self.log("test/loss", weighted_loss, on_epoch=True, on_step=False)
         
         return {
-            "input_seq": input_seq.cpu(),
-            "preds": preds.cpu(),
-            "target_seq": target_seq.cpu(),
+            "loss": weighted_loss.detach().cpu(),
+            "word_accuracy": word_matches.mean().detach().cpu(),
+            "char_accuracy": self.test_accuracy.compute().detach().cpu(),
+            "input_seq": input_seq.detach().cpu(),
+            "preds": preds.detach().cpu(),
+            "target_seq": target_seq.detach().cpu(),
+            "attn_weights": attn_weights.detach().cpu() if attn_weights is not None else None,
         }
     
     def on_test_epoch_start(self):
@@ -264,18 +278,34 @@ class Seq2SeqModel(pl.LightningModule):
         self._test_outputs.append(outputs)
 
     def on_test_epoch_end(self):
-        all_inputs, all_preds, all_refs = [], [], []
-        
+        all_inputs, all_preds, all_refs, all_attns = [], [], [], []
+        all_char_acc, all_word_acc, all_loss = [], [], []
         for o in self._test_outputs:
             all_inputs.extend([seq for seq in o["input_seq"]])
             all_preds.extend([seq for seq in o["preds"]])
             all_refs.extend([seq for seq in o["target_seq"]])
+            all_attns.extend([a for a in o["attn_weights"]]) if o["attn_weights"] is not None else None
+            
+            all_char_acc.append(o["char_accuracy"])
+            all_word_acc.append(o["word_accuracy"])
+            all_loss.append(o["loss"])
         
         self.test_results = {
             "input_seq": all_inputs,
             "preds": all_preds,
             "target_seq": all_refs,
+            "attn_weights": all_attns,
         }
+
+        metrics = {
+            "char_accuracy": torch.stack(all_char_acc).mean().item(),
+            "word_accuracy": torch.stack(all_word_acc).mean().item(),
+            "loss": torch.stack(all_loss).mean().item(),
+        }
+        df = pd.DataFrame(list(metrics.items()), columns=["Metric", "Value"])
+        table = wandb.Table(dataframe=df)
+        wandb.log({"test/metrics_table": table})
+        
 
     def configure_optimizers(self):
         """
