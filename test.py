@@ -96,7 +96,7 @@ def test(args):
         raise ValueError(f"Invalid attention type: {args.attention_type}")
     output_path.mkdir(parents=True, exist_ok=True)
 
-    ckpt_file = Path("./checkpoints") / f"{make_run_name(args)}.ckpt"
+    ckpt_file = Path("./data/checkpoints") / f"{make_run_name(args)}.ckpt"
     if not ckpt_file.is_file():
         raise FileNotFoundError(f"Checkpoint file {ckpt_file} not found.")
     

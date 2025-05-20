@@ -91,7 +91,7 @@ def train(args):
     )
 
     checkpoint_callback = ModelCheckpoint(
-        dirpath="checkpoints",
+        dirpath="data/checkpoints",
         filename=run_name,
         save_top_k=1,
         monitor="val/word_accuracy",
