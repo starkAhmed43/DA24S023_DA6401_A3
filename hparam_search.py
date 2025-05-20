@@ -15,7 +15,7 @@ def hparam_search():
     # Get hyperparameters from the Wandb configuration
     config = wandb.config
 
-    # Instantiate DataModule for the chosen language (For example, 'hi' for Hindi)
+    # Instantiate DataModule for the chosen language (For example, 'ta' for Tamil)
     data_module = DakshinaDataModule(lang=config.lang, batch_size=config.batch_size, num_workers=config.num_workers)
     data_module.prepare_data()
     data_module.setup()
