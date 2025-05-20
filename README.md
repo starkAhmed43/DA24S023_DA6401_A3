@@ -83,7 +83,7 @@ If Wandb is not configured, training will fail unless you modify the code to rem
 ## Instructions
 
 ### Dataset
-The code will **automatically download and extract** the required Dakshina dataset as well as the trained checkpoints to the `data/` directory when the training script is first run. No manual steps are needed. 
+The code will **automatically download and extract** the required Dakshina dataset (from Google servers) as well as the trained checkpoints (from Github releases) to the `data/` directory when the training script is first run. No manual steps are needed. 
 
 If you would like to play around with them before that, you can start the download by running the `datamodule` script:
 ```bash
@@ -195,13 +195,6 @@ You can control sweep runs and other options with the following arguments:
 
 This project supports training, validation, testing, and inference on CUDA GPUs, including multi-GPU setups.
 
-> **Note:**
-> - If both `CUDA_VISIBLE_DEVICES` is set in the environment and `--cuda_devices`/`cuda_devices` is provided, the config/CLI value will override the environment.
-> - For multi-GPU training, PyTorch Lightning will automatically use all visible GPUs. You can control the number of devices with the `--devices` argument if needed.
-> - The code uses `auto` device selection in Lightning Trainer, so **any backend supported by your installed PyTorch should work** (e.g., CUDA, Apple Silicon Metal, etc.).
-> - This codebase was tested on both CUDA (NVIDIA GPUs) and Apple Silicon Metal (M1/M2 Macs).
-> - **Theoretically, it should also work on Intel Macs with dedicated AMD GPUs that support Metal,** but PyTorch must be built from source for those devices, which is typically not worth the trouble (see [PyTorch Metal backend docs](https://pytorch.org/docs/stable/notes/mps.html)).
-
 ### 1. Using CUDA_VISIBLE_DEVICES (Recommended)
 
 You can select which GPUs to use by setting the `CUDA_VISIBLE_DEVICES` environment variable in your command line before running any script:
@@ -219,27 +212,11 @@ CUDA_VISIBLE_DEVICES=1 python test.py --config model_configs/bahdanau_rnn.yaml
 
 This works for all scripts: `train.py`, `test.py`, and `hparam_search.py`.
 
-### 2. Setting GPUs via Config or CLI (Optional)
-
-You can also specify GPUs to use via a command-line argument or YAML config. For example:
-
-```bash
-python train.py --config model_configs/bahdanau_rnn.yaml --cuda_devices 0,1
-```
-
-Or in your YAML config:
-
-```yaml
-cuda_devices: 0,1
-```
-
-If set, the code will set `os.environ["CUDA_VISIBLE_DEVICES"]` before initializing PyTorch Lightning. This allows for reproducible GPU selection from config files or sweeps.
-
 > **Note:**
 > - For multi-GPU training, the code uses `auto` device selection, so PyTorch Lightning will automatically use all visible GPUs. As mentioned earlier, you can control the number of devices with the `CUDA_VISIBLE_DEVICES` variable.
 > - The code uses `auto` accelerator selection in Lightning Trainer, so **any backend supported by your installed PyTorch should work** (e.g., CUDA, Apple Silicon Metal, etc.).
-> - This codebase was tested on both CUDA (NVIDIA GPUs) and Apple Silicon Metal (M1/M2 Macs).
-> - **Theoretically, it should also work on Intel Macs with dedicated AMD GPUs that support Metal,** but PyTorch must be built from source for those devices, which is typically not worth the trouble (see [PyTorch Metal backend docs](https://pytorch.org/docs/stable/notes/mps.html)).
+> - This codebase was tested on both CUDA (NVIDIA GPUs) and Apple Silicon Metal (M1/M2/M3/M4 Macs).
+> - **Theoretically, it should also work on Intel Macs with dedicated AMD GPUs that support Metal,** but PyTorch must be built from source for those devices, which is typically not worth the trouble (see [PyTorch Metal backend docs](https://pytorch.org/docs/stable/notes/mps.html) \& [Building PyTorch from Source](https://github.com/pytorch/pytorch#from-source)).
 
 ---
 
@@ -261,10 +238,4 @@ If set, the code will set `os.environ["CUDA_VISIBLE_DEVICES"]` before initializi
 ```
 
 > **Note:**  
-> Some directories (like `data/`, `lightning_logs/`, `wandb/`, and `predictions_*`) are created and used automatically as you run training, testing, or logging scripts. These are included in `.gitignore` and will not appear in a fresh clone until you run the code.
-
----
-
-## License
-
-This repository is part of an academic assignment. Please check licensing and usage terms if you intend to reuse or distribute.
+> Some directories (like `data/`, `lightning_logs/`, `wandb/`, and `predictions_*`) are created and used automatically as you run training, testing, or hparam sweep scripts. These are included in `.gitignore` and will not appear in a fresh clone of the repo until you run the code.
