@@ -1,0 +1,15 @@
+attention_type: bahdanau
+batch_size: 512
+dropout: 0.4
+embedding_dim: 256
+epochs: 20
+hidden_dim: 768
+input_vocab_size: 29
+lang: ta
+learning_rate: 0.0005
+num_layers: 4
+num_workers: 32
+output_vocab_size: 49
+project: DA24S023_DA6401_A3
+rnn_cell: GRU
+train_teacher_forcing_ratio: 0.7
