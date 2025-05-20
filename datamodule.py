@@ -1,5 +1,6 @@
 import torch
 import shutil
+import zipfile
 import tarfile
 import warnings
 import subprocess
@@ -118,56 +119,77 @@ class DakshinaDataModule(pl.LightningDataModule):
 
     def prepare_data(self):
         """
-        Prepares the dataset by downloading and extracting it if not already available.
+        Prepares the dataset and checkpoints by downloading and extracting them if necessary.
+        This method checks if the dataset and checkpoints already exist in the specified directory.
+        If they do not exist, it downloads the dataset and the checkpoints from the specified URLs.
+        It also handles the nested directory structure of the dataset and cleans up unnecessary files.
         """
-        if self.data_dir.exists():
+        if self.data_dir.exists() :
             print("Data directory already exists, skipping download.")
-            return
-        
-        # URL for the dataset
-        url = "https://storage.googleapis.com/gresearch/dakshina/dakshina_dataset_v1.0.tar"
-        tar_path = Path(str(self.data_dir)+".tar")
-
-        if tar_path.exists():
-            print("Tar file already exists, skipping download.")
         else:
-            print("Downloading dataset...")
-            # Download the dataset using curl
-            subprocess.run(["curl", "-o", str(tar_path), "-L", url], check=True)
         
-        print("Extracting dataset...")
-        # Extract the tar file
-        with tarfile.open(tar_path, "r") as tar:
-            tar.extractall(path=self.data_dir, filter="data")
-            print("Extraction complete.")
+            # URL for the dataset
+            url = "https://storage.googleapis.com/gresearch/dakshina/dakshina_dataset_v1.0.tar"
+            tar_path = Path(str(self.data_dir)+".tar")
 
-        # Handle nested directory structure
-        extracted_items = list(self.data_dir.iterdir())
-        if len(extracted_items) == 1 and extracted_items[0].is_dir():
-            root_folder = extracted_items[0]
-            print(f"Root folder detected: {root_folder.name}. Moving its contents...")
-            for item in root_folder.iterdir():
-                item.rename(self.data_dir / item.name)
-            root_folder.rmdir()
-            print("Root folder removed, contents moved to extract_path.")
+            if tar_path.exists():
+                print("Tar file already exists, skipping download.")
+            else:
+                print("Downloading dataset...")
+                # Download the dataset using curl
+                subprocess.run(["curl", "-o", str(tar_path), "-L", url], check=True)
+            
+            print("Extracting dataset...")
+            # Extract the tar file
+            with tarfile.open(tar_path, "r") as tar:
+                tar.extractall(path=self.data_dir, filter="data")
+                print("Extraction complete.")
 
-        # Clean up unnecessary files and directories
-        for dir_path in self.data_dir.iterdir():
-            if dir_path.is_dir() and len(dir_path.name) == 2:
-                lexicons_path = dir_path / "lexicons"
-                if lexicons_path.exists() and lexicons_path.is_dir():                        
-                    # Remove all contents in the 2-char directory except "lexicons"
-                    for item in dir_path.iterdir():
-                        if item != lexicons_path:
-                            shutil.rmtree(item) if item.is_dir() else item.unlink()
-                            
-                    # Move files from "lexicons" to the parent directory
-                    for item in lexicons_path.iterdir():
-                        item.rename(dir_path / item.name)
-                    
-                    # Remove the "lexicons" folder
-                    lexicons_path.rmdir()
-                    print(f"Processed and cleaned directory: {dir_path.name}")
+            # Handle nested directory structure
+            extracted_items = list(self.data_dir.iterdir())
+            if len(extracted_items) == 1 and extracted_items[0].is_dir():
+                root_folder = extracted_items[0]
+                print(f"Root folder detected: {root_folder.name}. Moving its contents...")
+                for item in root_folder.iterdir():
+                    item.rename(self.data_dir / item.name)
+                root_folder.rmdir()
+                print("Root folder removed, contents moved to extract_path.")
+
+            # Clean up unnecessary files and directories
+            for dir_path in self.data_dir.iterdir():
+                if dir_path.is_dir() and len(dir_path.name) == 2:
+                    lexicons_path = dir_path / "lexicons"
+                    if lexicons_path.exists() and lexicons_path.is_dir():                        
+                        # Remove all contents in the 2-char directory except "lexicons"
+                        for item in dir_path.iterdir():
+                            if item != lexicons_path:
+                                shutil.rmtree(item) if item.is_dir() else item.unlink()
+                                
+                        # Move files from "lexicons" to the parent directory
+                        for item in lexicons_path.iterdir():
+                            item.rename(dir_path / item.name)
+                        
+                        # Remove the "lexicons" folder
+                        lexicons_path.rmdir()
+                        print(f"Processed and cleaned directory: {dir_path.name}")
+        
+        ckpt_dir = self.data_dir.parent / "checkpoints"
+        ckpt_zip_path = Path(str(ckpt_dir)+".zip")
+        ckpt_url = "https://github.com/starkAhmed43/DA24S023_DA6401_A3/releases/download/v1.0-checkpoints/checkpoints.zip"
+
+        if ckpt_dir.exists():
+            print("Checkpoints directory already exists, skipping download.")
+        else:
+            if ckpt_zip_path.exists():
+                print("Checkpoints zip already exists, skipping download.")
+            else:
+                print("Downloading checkpoints.zip...")
+                subprocess.run(["curl", "-L", "-o", str(ckpt_zip_path), ckpt_url], check=True)
+            print("Extracting checkpoints.zip...")
+            ckpt_dir.mkdir(parents=True, exist_ok=True)
+            with zipfile.ZipFile(ckpt_zip_path, "r") as zip_ref:
+                zip_ref.extractall(ckpt_dir)
+            print("Checkpoints extracted.")
     
     def setup(self, stage=None):
         """
