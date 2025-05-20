@@ -1,0 +1,8 @@
+wandb
+numpy
+pandas
+pillow
+seaborn
+lightning
+matplotlib
+torchmetrics
